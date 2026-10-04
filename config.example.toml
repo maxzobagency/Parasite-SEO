@@ -1,0 +1,17 @@
+# Copy to config.toml. Credentials go in .env (see .env.example), NOT here.
+[serp]
+location_code = 2840      # 2840 US, 2826 UK, 2124 CA, 2036 AU  (full list: DataForSEO locations endpoint)
+language_code = "en"
+device = "desktop"        # desktop | mobile
+depth = 20                # how deep to look; billed per 10 results
+priority = 1              # 1 = standard queue (cheapest, ~1-5 min), 2 = high priority (2x cost)
+top_n = 10                # "visible" cut-off used in the report
+
+[detection]
+# add "social_video" (YouTube/Facebook/...) or "edu_gov" (hijacked .edu/.gov pages) if you want them counted
+enabled_categories = ["ugc_blog", "forum_qa", "docs_hosting", "code_static_hosting", "professional_social", "news_contributor"]
+
+[paths]
+db = "parasite.db"
+keywords = "keywords.csv"
+report = "report.html"

@@ -1,0 +1,65 @@
+# Built-in parasite-host list. Each rule is "host" or "host/path-prefix".
+# A host rule also matches every subdomain (foo.medium.com, user.github.io ...).
+# Add your own at runtime with:  python -m parasite_tracker mark example.com parasite
+# Categories can be switched on/off in config.toml -> [detection].enabled_categories
+
+[categories.ugc_blog]   # free blogging / publishing platforms
+rules = [
+  "medium.com", "substack.com", "blogspot.com", "blogger.com", "wordpress.com",
+  "tumblr.com", "hubpages.com", "vocal.media", "dev.to", "hashnode.dev",
+  "hashnode.com", "livejournal.com", "weebly.com", "wixsite.com", "strikingly.com",
+  "jimdosite.com", "over-blog.com", "bloglovin.com", "ghost.io", "typepad.com",
+  "notion.site", "notion.so", "carrd.co", "write.as", "telegra.ph", "bravenet.com",
+  "edublogs.org", "angelfire.com", "sites.google.com", "newsbreak.com",
+]
+
+[categories.forum_qa]   # forums, Q&A, communities
+rules = [
+  "reddit.com", "quora.com", "answers.com", "stackexchange.com", "stackoverflow.com",
+  "tripadvisor.com/showtopic", "tripadvisor.com/forum", "forums.",
+  "community.", "discussions.", "ask.fm", "yahoo.com/answers", "answers.yahoo.com",
+  "disqus.com", "producthunt.com", "indiehackers.com",
+]
+
+[categories.docs_hosting]   # document / file / presentation hosting
+rules = [
+  "docs.google.com", "drive.google.com", "scribd.com", "slideshare.net", "issuu.com",
+  "academia.edu", "calameo.com", "yumpu.com", "pdfcoffee.com", "dokumen.pub",
+  "researchgate.net", "figshare.com", "zenodo.org", "dropbox.com", "box.com",
+]
+
+[categories.code_static_hosting]   # free static / app hosting (the classic spam hosts)
+rules = [
+  "github.io", "github.com", "gitlab.io", "netlify.app", "vercel.app", "pages.dev",
+  "web.app", "firebaseapp.com", "herokuapp.com", "webflow.io", "wixstudio.com",
+  "replit.app", "repl.co", "glitch.me", "000webhostapp.com", "neocities.org",
+  "surge.sh", "onrender.com", "workers.dev", "bubbleapps.io", "framer.website",
+  "mystrikingly.com", "godaddysites.com", "square.site", "myshopify.com",
+]
+
+[categories.professional_social]   # profile / article style pages on big networks
+rules = [
+  "linkedin.com/pulse", "linkedin.com/posts", "linkedin.com/in", "linkedin.com/company",
+  "linkedin.com/advice", "pinterest.com", "flipboard.com", "mix.com",
+  "about.me", "linktr.ee", "bio.link", "beacons.ai", "gravatar.com",
+  "crunchbase.com/organization", "behance.net", "dribbble.com", "deviantart.com",
+  "soundcloud.com", "mixcloud.com", "goodreads.com", "wattpad.com",
+]
+
+[categories.news_contributor]   # contributor / sponsored sections on authority domains
+rules = [
+  "forbes.com/sites", "forbes.com/councils", "entrepreneur.com/article",
+  "yahoo.com/lifestyle", "finance.yahoo.com", "benzinga.com", "globenewswire.com",
+  "prnewswire.com", "businesswire.com", "einpresswire.com", "openpr.com",
+  "prlog.org", "newswire.com", "accesswire.com", "pr.com", "24-7pressrelease.com",
+  "msn.com", "huffpost.com/contributors", "thrive-global.com", "inc.com/contributor",
+]
+
+[categories.social_video]   # off by default - big social/video sites (not classic parasites)
+rules = [
+  "youtube.com", "facebook.com", "instagram.com", "tiktok.com", "x.com",
+  "twitter.com", "vimeo.com", "dailymotion.com", "twitch.tv",
+]
+
+[categories.edu_gov]   # off by default - heuristic: hijacked / abandoned .edu .gov .ac.uk subpages
+rules = []   # handled by the TLD heuristic in detector.py
