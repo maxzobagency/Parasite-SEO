@@ -11,12 +11,14 @@ Zero dependencies: Python 3.11+ only. Data lives in a local SQLite file.
 ```bash
 APP_PASSWORD=choose-a-password python -m parasite_tracker.webapp     # then open http://localhost:8000
 ```
-Log in, enter your DataForSEO details under **Settings**, paste keywords under **Keywords** (saved for next
-time), click **Check now** on the Dashboard and watch the progress bar; the report appears when it's done.
-Optional auto-check (daily/weekly) is in Settings.
+Log in, paste keywords, enter your DataForSEO details and click **Search now**: results appear live
+(DataForSEO *Live* mode, ~$0.002 per keyword per 10 results, shown before you confirm). **Nothing is saved on
+the server** - keywords and results live in memory for ~1 hour (download the CSV), and your DataForSEO
+password is only remembered in your own browser if you tick the box. The queue-based bulk mode
+(cheaper, ~$0.0006) is still available from the command line.
 
 **Deploy on Render:** New → Blueprint → pick this repo + branch (it reads `render.yaml`), set `APP_PASSWORD`
-when asked. It needs a persistent disk (paid "Starter" instance) so keywords/history survive restarts.
+when asked. No disk is needed (nothing is stored); the free plan works but sleeps when idle.
 The same `Dockerfile` also works on Railway/Fly.io. Always set a strong `APP_PASSWORD`: the app spends your
 DataForSEO credit.
 

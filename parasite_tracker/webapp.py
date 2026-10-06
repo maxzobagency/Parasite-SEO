@@ -14,16 +14,15 @@ import json
 import os
 import secrets
 import sys
-import threading
 import time
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from . import analysis, db, tracker
+from . import analysis, db, live
 from .config import config_from_db, parse_keywords_text
-from .dataforseo import DataForSEO, DataForSEOError
-from .detector import DEFAULT_ENABLED, host_of, root_domain
+from .dataforseo import DataForSEO
+from .detector import host_of, root_domain
 from .report import render_html
 
 DB_PATH = os.environ.get("DB_PATH", "parasite.db")
@@ -69,87 +68,9 @@ iframe{width:100%;height:1100px;border:1px solid var(--line);border-radius:10px}
 .login{max-width:340px;margin:12vh auto}
 """
 
-# ---------------------------------------------------------------- background job
-class Job:
-    lock = threading.Lock()
-    running = False
-    error = ""
-    note = ""
-
-
-def start_job(resume: bool = False) -> str | None:
-    """Start a run in a background thread. Returns an error string, or None if started."""
-    if not Job.lock.acquire(blocking=False):
-        return "A check is already running."
-    conn = db.connect(DB_PATH)
-    cfg = config_from_db(conn)
-    if not cfg.login or not cfg.password:
-        Job.lock.release()
-        return "Add your DataForSEO login and API password in Settings first."
-    if not conn.execute("SELECT 1 FROM keywords WHERE active=1").fetchone():
-        Job.lock.release()
-        return "Add some keywords first."
-    Job.running, Job.error, Job.note = True, "", "Starting…"
-
-    def work():
-        c = db.connect(DB_PATH)
-        try:
-            api = DataForSEO(cfg.login, cfg.password)
-            run_id = tracker.latest_open_run(c) if resume else None
-            if run_id:
-                c.execute("UPDATE tasks SET task_id=NULL, status='pending', error=NULL "
-                          "WHERE run_id=? AND status='error'", (run_id,))
-                c.commit()
-            else:
-                run_id = tracker.start_run(c, cfg)
-            Job.note = "Sending keywords to DataForSEO…"
-            tracker.submit(c, api, cfg, run_id)
-            Job.note = "Waiting for Google results…"
-            if not tracker.collect(c, api, cfg, run_id):
-                Job.error = "Some keywords failed (see Retry). Results that worked are in the report."
-        except (DataForSEOError, OSError) as ex:
-            Job.error = str(ex)
-        except Exception as ex:  # noqa: BLE001 - surface anything to the UI
-            Job.error = f"Unexpected error: {ex}"
-        finally:
-            Job.running, Job.note = False, ""
-            Job.lock.release()
-
-    threading.Thread(target=work, daemon=True).start()
-    return None
-
-
-def scheduler() -> None:
-    while True:
-        time.sleep(600)
-        try:
-            conn = db.connect(DB_PATH)
-            days = config_from_db(conn).schedule_days
-            if days > 0 and not Job.running:
-                due = conn.execute("SELECT NOT EXISTS(SELECT 1 FROM runs WHERE started_at > "
-                                   "datetime('now', ?))", (f"-{days} days",)).fetchone()[0]
-                if due:
-                    start_job()
-        except Exception as ex:  # noqa: BLE001
-            print("scheduler:", ex, file=sys.stderr)
-
-
-def status(conn) -> dict:
-    run = conn.execute("SELECT * FROM runs ORDER BY id DESC LIMIT 1").fetchone()
-    done = total = errors = 0
-    if run:
-        done, total, errors = conn.execute(
-            "SELECT COALESCE(SUM(status='done'),0), COUNT(*), COALESCE(SUM(status='error'),0) "
-            "FROM tasks WHERE run_id=?", (run["id"],)).fetchone()
-    return {"running": Job.running, "note": Job.note, "error": Job.error, "done": done,
-            "total": total, "errors": errors, "run_id": run["id"] if run else None,
-            "cost": round(run["cost"], 4) if run else 0,
-            "can_resume": bool(tracker.latest_open_run(conn)) and not Job.running}
-
-
 # ---------------------------------------------------------------- html helpers
 def page(title: str, body: str, active: str = "", flash: str = "", kind: str = "ok") -> str:
-    links = [("/", "Dashboard"), ("/keywords", "Keywords"), ("/settings", "Settings"), ("/domains", "Parasite list")]
+    links = [("/", "Search"), ("/settings", "Settings"), ("/domains", "Parasite list")]
     nav = "".join(f'<a href="{h}" class="{"on" if h == active else ""}">{n}</a>' for h, n in links)
     msg = f'<div class="msg {kind}">{e(flash)}</div>' if flash else ""
     return (f'<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
@@ -166,18 +87,32 @@ def login_page(err: str = "") -> str:
             '<p><button>Log in</button></p></form></div></body></html>')
 
 
-DASH_JS = """
+SEARCH_JS = """
 <script>
-const $=s=>document.querySelector(s);let was=false;
-async function tick(){try{const s=await (await fetch('/status.json')).json();
+const $=s=>document.querySelector(s);let job=null,timer=null,lastShown=-1,lastRefresh=0;
+const LS=k=>{try{return localStorage.getItem(k)||''}catch(e){return ''}};
+$('#login').value=LS('dfs_login');$('#password').value=LS('dfs_pass');
+function est(){const n=$('#text').value.split('\\n').filter(l=>l.trim()&&l.trim().toLowerCase()!='keyword').length;
+ $('#est').textContent=n?`${n} keywords · about $${(n*Math.ceil($('#depth').value/10)*0.002).toFixed(2)} (billed by DataForSEO)`:''}
+['#text','#depth'].forEach(i=>$(i).addEventListener('input',est));est();
+$('#f').onchange=e=>{const r=new FileReader();r.onload=()=>{$('#text').value=r.result;est()};r.readAsText(e.target.files[0])};
+async function go(){
+ if(!$('#text').value.trim()){$('#err').textContent='Paste some keywords first.';return}
+ if(!confirm('Search now? '+$('#est').textContent))return;
+ const fd=new URLSearchParams(new FormData($('#form')));
+ if($('#remember').checked){try{localStorage.setItem('dfs_login',$('#login').value);localStorage.setItem('dfs_pass',$('#password').value)}catch(e){}}
+ else{try{localStorage.removeItem('dfs_login');localStorage.removeItem('dfs_pass')}catch(e){}}
+ $('#err').textContent='';$('#go').disabled=true;lastShown=-1;
+ const j=await (await fetch('/search',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:fd})).json();
+ if(j.error){$('#err').textContent=j.error;$('#go').disabled=false;return}
+ job=j.job;$('#res').hidden=false;clearInterval(timer);timer=setInterval(tick,1500);tick()}
+async function tick(){const s=await (await fetch('/job/'+job+'.json')).json();
  $('#bar').style.width=(s.total?100*s.done/s.total:0)+'%';
- $('#txt').textContent=s.running?`${s.note} ${s.done}/${s.total} keywords done`:(s.total?`Last run #${s.run_id}: ${s.done}/${s.total} keywords, cost $${s.cost}`:'No run yet.');
- $('#err').textContent=s.error||'';$('#go').disabled=s.running;$('#retry').style.display=s.can_resume?'inline-block':'none';$('#retry').disabled=s.running;
- if(was&&!s.running)$('#frame').src='/report?'+Date.now();was=s.running}catch(e){}}
-setInterval(tick,3000);tick();
-async function go(resume){if(!resume&&!confirm('Start a check now? Estimated cost: $'+$('#go').dataset.cost+' (billed by DataForSEO)'))return;
- const r=await fetch('/run',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:resume?'resume=1':''});
- const j=await r.json();if(j.error)$('#err').textContent=j.error;tick()}
+ $('#txt').textContent=`${s.done}/${s.total} keywords · cost so far $${s.cost}`+(s.finished?' · done':'');
+ $('#err').textContent=s.fatal||(s.n_errors?`${s.n_errors} keyword(s) failed, e.g. ${s.errors[0]}`:'');
+ const now=Date.now();
+ if(s.done!==lastShown&&(s.finished||now-lastRefresh>6000)){lastShown=s.done;lastRefresh=now;$('#frame').src='/job/'+job+'/report?'+now;$('#dl').href='/job/'+job+'/export.csv';$('#dl').hidden=false}
+ if(s.finished||s.fatal){clearInterval(timer);$('#go').disabled=false}}
 </script>"""
 
 
@@ -249,12 +184,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._redirect("/login")
         if method == "POST" and not self._same_origin():
             return self._send("bad origin", 403)
-        routes = {("GET", "/"): self.dashboard, ("GET", "/report"): self.report,
-                  ("GET", "/keywords"): self.keywords, ("POST", "/keywords"): self.keywords_post,
+        routes = {("GET", "/"): self.dashboard, ("POST", "/search"): self.search_post,
                   ("GET", "/settings"): self.settings, ("POST", "/settings"): self.settings_post,
                   ("GET", "/domains"): self.domains, ("POST", "/domains"): self.domains_post,
-                  ("POST", "/run"): self.run_post, ("GET", "/status.json"): self.status_json,
-                  ("GET", "/export.csv"): self.export, ("POST", "/logout"): self.logout}
+                  ("POST", "/logout"): self.logout}
+        if path.startswith("/job/"):
+            fn = (self.job_json if path.endswith(".json") else self.job_report if path.endswith("/report")
+                  else self.job_export if path.endswith("/export.csv") else None)
+            return fn(conn) if fn and method == "GET" else self._send("not found", 404)
         fn = routes.get((method, path))
         if not fn:
             return self._send("not found", 404)
@@ -285,102 +222,114 @@ class Handler(BaseHTTPRequestHandler):
     # -- pages
     def dashboard(self, conn):
         cfg = config_from_db(conn)
-        n = conn.execute("SELECT COUNT(*) FROM keywords WHERE active=1").fetchone()[0]
-        cost = tracker.estimate_cost(n, cfg.depth, cfg.priority)
-        has_data = analysis.build(conn, cfg.top_n) is not None
-        todo = []
-        if not (cfg.login and cfg.password):
-            todo.append('<a href="/settings">1. Enter your DataForSEO login</a>')
-        if not n:
-            todo.append('<a href="/keywords">2. Add your keywords</a>')
-        guide = ('<div class="card"><b>Getting started</b><br>' + "<br>".join(todo) + "</div>") if todo else ""
-        frame = ('<iframe id="frame" src="/report"></iframe>' if has_data else
-                 '<iframe id="frame" hidden></iframe><p class="hint">The report appears here after the first finished run (usually 2–10 minutes).</p>')
-        body = f"""<h1>Dashboard</h1>{guide}
-<div class="card"><div class="bar"><i id="bar"></i></div><p id="txt" class="hint"></p><p id="err" class="err"></p>
-<button id="go" data-cost="{cost:.2f}" onclick="go(false)">Check now ({n} keywords · ~${cost:.2f})</button>
-<button id="retry" class="sec" style="display:none" onclick="go(true)">Retry / resume last run</button>
-<a class="btn sec" href="/export.csv" style="background:var(--card);color:var(--fg);border:1px solid var(--line)">Export CSV</a></div>
-{frame}{DASH_JS}"""
-        self._send(page("Dashboard", body, "/", *self._flash()))
+        env_creds = bool(cfg.login and cfg.password and os.environ.get("DATAFORSEO_LOGIN"))
+        loc = "".join(f'<option value="{k}" {"selected" if k == cfg.location_code else ""}>{v}</option>' for k, v in LOCATIONS.items())
+        sel = lambda cur, opts: "".join(f'<option value="{k}" {"selected" if str(k) == str(cur) else ""}>{v}</option>' for k, v in opts)
+        if env_creds:
+            cred = '<p class="ok">DataForSEO details are set on the server.</p><input type="hidden" id="login" name="login"><input type="hidden" id="password" name="password">'
+            remember = ""
+        else:
+            cred = ('<div class="row"><div><label>DataForSEO login (email)</label><input id="login" name="login" autocomplete="off"></div>'
+                    '<div><label>API password <span class="hint">(from app.dataforseo.com/api-access)</span></label><input id="password" type="password" name="password" autocomplete="off"></div></div>')
+            remember = '<label class="cb"><input type="checkbox" id="remember" checked> Remember my DataForSEO details in <b>this browser only</b> (never stored on the server)</label>'
+        if env_creds:
+            remember = '<input type="checkbox" id="remember" hidden>'
+        body = f"""<h1>Search</h1>
+<form id="form" class="card" onsubmit="return false">{cred}{remember}
+<label>Keywords <span class="hint">– one per line, optionally <code>keyword, niche</code>. Not saved anywhere.</span></label>
+<textarea id="text" name="text" placeholder="best vpn for netflix, vpn&#10;best crm for small business, saas"></textarea>
+<div class="row"><div><label>Country</label><select name="location_code">{loc}</select></div>
+<div><label>Language code</label><input name="language_code" value="{e(cfg.language_code)}"></div>
+<div><label>Device</label><select name="device">{sel(cfg.device, [("desktop", "Desktop"), ("mobile", "Mobile")])}</select></div>
+<div><label>How deep</label><select id="depth" name="depth">{sel(min(cfg.depth, 30), [(10, "Top 10 (cheapest)"), (20, "Top 20"), (30, "Top 30")])}</select></div></div>
+<p><button id="go" onclick="go()">Search now</button> <span id="est" class="hint"></span>
+<input type="file" id="f" accept=".csv,.txt" style="width:auto;margin-left:10px"></p><p id="err" class="err"></p></form>
+<div id="res" hidden><div class="card"><div class="bar"><i id="bar"></i></div><p id="txt" class="hint"></p>
+<a id="dl" class="btn" hidden href="#" style="background:var(--card);color:var(--fg);border:1px solid var(--line)">Download CSV</a>
+<span class="hint"> Results are kept in memory for about an hour, so download the CSV if you need them.</span></div>
+<iframe id="frame"></iframe></div>{SEARCH_JS}"""
+        self._send(page("Search", body, "/"))
 
-    def report(self, conn):
+    def search_post(self, conn):
+        f = self._form()
+        g = lambda k: f.get(k, [""])[0].strip()
         cfg = config_from_db(conn)
-        data = analysis.build(conn, cfg.top_n)
-        self._send(render_html(data) if data else "<p style='font:14px sans-serif;padding:20px'>No finished run yet.</p>")
-
-    def keywords(self, conn):
-        rows = conn.execute("SELECT * FROM keywords WHERE active=1 ORDER BY niche, keyword").fetchall()
-        trs = "".join(f'<tr><td><input type="checkbox" name="del" value="{r["id"]}"></td><td>{e(r["keyword"])}</td>'
-                      f'<td>{e(r["niche"])}</td><td>{LOCATIONS.get(r["location_code"], r["location_code"])}</td></tr>' for r in rows)
-        del_btn = ('<button class="sec" onclick="return confirm(' + "'Delete ticked keywords?'" + ')">Delete ticked</button>') if rows else ""
-        empty = '<tr><td colspan=4 class="hint">None saved yet.</td></tr>'
-        body = f"""<h1>Keywords <span class="hint">({len(rows)} saved)</span></h1>
-<form method="post" class="card"><label>Paste keywords <span class="hint">– one per line. Optional: <code>keyword, niche</code>. Pasting two columns from Excel/Google Sheets works too.</span></label>
-<textarea name="text" placeholder="best vpn for netflix, vpn&#10;best crm for small business, saas"></textarea>
-<p><label class="cb"><input type="radio" name="mode" value="add" checked> Add to my saved list</label>
-<label class="cb"><input type="radio" name="mode" value="replace"> Replace my whole list</label></p>
-<input type="hidden" name="action" value="save"><button>Save keywords</button>
-<input type="file" id="f" accept=".csv,.txt" style="width:auto;margin-left:10px"></form>
-<script>document.getElementById('f').onchange=e=>{{const r=new FileReader();r.onload=()=>document.querySelector('textarea').value=r.result;r.readAsText(e.target.files[0])}}</script>
-<form method="post"><input type="hidden" name="action" value="delete"><div class="card" style="max-height:480px;overflow:auto">
-<table><tr><th></th><th>Keyword</th><th>Niche</th><th>Location</th></tr>{trs or empty}</table></div>
-{del_btn}</form>"""
-        self._send(page("Keywords", body, "/keywords", *self._flash()))
-
-    def keywords_post(self, conn):
-        f, cfg = self._form(), config_from_db(conn)
-        if f.get("action", [""])[0] == "delete":
-            ids = [int(x) for x in f.get("del", []) if x.isdigit()]
-            conn.executemany("UPDATE keywords SET active=0 WHERE id=?", [(i,) for i in ids])
-            conn.commit()
-            return self._redirect(f"/keywords?m=Deleted {len(ids)} keywords.")
+        login, password = g("login") or cfg.login, f.get("password", [""])[0] or cfg.password
+        if not login or not password:
+            return self._json({"error": "Enter your DataForSEO login and API password."})
+        for k in ("location_code", "depth"):
+            if g(k).isdigit():
+                setattr(cfg, k, int(g(k)))
+        cfg.depth = min(max(cfg.depth, 10), 50)
+        cfg.language_code = g("language_code") or cfg.language_code
+        cfg.device = g("device") if g("device") in ("desktop", "mobile") else cfg.device
         rows = parse_keywords_text(f.get("text", [""])[0], cfg)
         if not rows:
-            return self._redirect("/keywords?m=Nothing to save - paste some keywords first.&k=err")
-        tracker.add_keywords(conn, rows, replace=f.get("mode", ["add"])[0] == "replace")
-        self._redirect(f"/keywords?m=Saved {len(rows)} keywords.")
+            return self._json({"error": "Paste some keywords first."})
+        if len(rows) > live.MAX_KEYWORDS:
+            return self._json({"error": f"Max {live.MAX_KEYWORDS} keywords per search (you pasted {len(rows)})."})
+        ov = {r["domain"]: r["kind"] for r in conn.execute("SELECT domain, kind FROM overrides")}
+        job = live.start(rows, cfg, DataForSEO(login, password), ov)
+        self._json({"job": job.id})
+
+    def _job(self, path: str):
+        jid = path.split("/")[2].removesuffix(".json")
+        return live.get(jid)
+
+    def job_json(self, conn):
+        job = self._job(urlparse(self.path).path)
+        self._json(job.snapshot() if job else {"error": "expired"}, 200 if job else 404)
+
+    def job_report(self, conn):
+        job = self._job(urlparse(self.path).path)
+        if not job:
+            return self._send("<p style='font:14px sans-serif;padding:20px'>These results expired. Run the search again.</p>", 404)
+        with job.lock:
+            data = analysis.build(job.conn, job.cfg.top_n)
+        self._send(render_html(data) if data else "<p style='font:14px sans-serif;padding:20px'>Waiting for the first results…</p>")
+
+    def job_export(self, conn):
+        job = self._job(urlparse(self.path).path)
+        if not job:
+            return self._send("expired", 404)
+        out = io.StringIO()
+        w = csv.writer(out)
+        w.writerow(["keyword", "niche", "rank", "host", "url", "title", "is_parasite", "platform", "category", "confidence"])
+        with job.lock:
+            w.writerows(tuple(r) for r in job.conn.execute(
+                """SELECT k.keyword, k.niche, r.rank_group, r.host, r.url, r.title, r.is_parasite, r.platform,
+                   r.category, r.confidence FROM results r JOIN keywords k ON k.id=r.keyword_id
+                   ORDER BY k.keyword, r.rank_group"""))
+        self._send(out.getvalue(), ctype="text/csv; charset=utf-8",
+                   headers=[("Content-Disposition", 'attachment; filename="serps.csv"')])
+
+    def _json(self, obj, status=200):
+        self._send(json.dumps(obj), status, ctype="application/json")
 
     def settings(self, conn):
         cfg = config_from_db(conn)
-        env_creds = bool(os.environ.get("DATAFORSEO_LOGIN"))
         loc = "".join(f'<option value="{k}" {"selected" if k == cfg.location_code else ""}>{v}</option>' for k, v in LOCATIONS.items())
         cats = "".join(f'<label class="cb"><input type="checkbox" name="cat" value="{k}" {"checked" if k in cfg.enabled_categories else ""}> {e(v)}</label>' for k, v in CATEGORIES.items())
         sel = lambda cur, opts: "".join(f'<option value="{k}" {"selected" if str(k) == str(cur) else ""}>{v}</option>' for k, v in opts)
-        ph = "saved - leave blank to keep" if cfg.password else ""
-        if env_creds:
-            cred = '<p class="ok">Credentials are set through server environment variables.</p>'
-        else:
-            cred = (f'<div class="row"><div><label>Login (email)</label><input name="login" value="{e(cfg.login)}" autocomplete="off"></div>'
-                    f'<div><label>API password</label><input type="password" name="password" placeholder="{ph}" autocomplete="new-password"></div></div>')
         body = f"""<h1>Settings</h1><form method="post">
-<div class="card"><b>DataForSEO</b> <span class="hint">– use the <u>API password</u> from app.dataforseo.com/api-access (not your account password)</span>
-{cred}</div>
-<div class="card"><b>Search</b><div class="row">
+<div class="card"><b>Defaults for the Search page</b><div class="row">
 <div><label>Country</label><select name="location_code">{loc}</select></div>
 <div><label>Language code</label><input name="language_code" value="{e(cfg.language_code)}"></div>
 <div><label>Device</label><select name="device">{sel(cfg.device, [("desktop", "Desktop"), ("mobile", "Mobile")])}</select></div>
-<div><label>How deep to check</label><select name="depth">{sel(cfg.depth, [(10, "Top 10 (cheapest)"), (20, "Top 20"), (30, "Top 30"), (50, "Top 50")])}</select></div>
-<div><label>Speed</label><select name="priority">{sel(cfg.priority, [(1, "Normal (cheapest, ~1-5 min)"), (2, "High priority (2x cost, faster)")])}</select></div>
-<div><label>"Visible" means top…</label><select name="top_n">{sel(cfg.top_n, [(3, "3"), (5, "5"), (10, "10"), (20, "20")])}</select></div>
-<div><label>Auto-check</label><select name="schedule_days">{sel(cfg.schedule_days, [(0, "Off (manual only)"), (1, "Every day"), (3, "Every 3 days"), (7, "Every week"), (14, "Every 2 weeks")])}</select></div></div></div>
+<div><label>How deep</label><select name="depth">{sel(min(cfg.depth, 30), [(10, "Top 10"), (20, "Top 20"), (30, "Top 30")])}</select></div>
+<div><label>"Visible" means top…</label><select name="top_n">{sel(cfg.top_n, [(3, "3"), (5, "5"), (10, "10"), (20, "20")])}</select></div></div></div>
 <div class="card"><b>What counts as a parasite</b>{cats}</div><button>Save settings</button></form>"""
         self._send(page("Settings", body, "/settings", *self._flash()))
 
     def settings_post(self, conn):
         f = self._form()
         g = lambda k: f.get(k, [""])[0].strip()
-        for k in ("location_code", "language_code", "device", "depth", "priority", "top_n", "schedule_days"):
+        for k in ("location_code", "language_code", "device", "depth", "top_n"):
             if g(k):
                 db.set_setting(conn, k, g(k))
-        if "login" in f:
-            db.set_setting(conn, "login", g("login"))
-        if g("password"):
-            db.set_setting(conn, "password", f["password"][0])
         cats = [c for c in f.get("cat", []) if c in CATEGORIES]
         db.set_setting(conn, "enabled_categories", json.dumps(cats))
-        n = tracker.reclassify(conn, config_from_db(conn))
-        self._redirect(f"/settings?m=Saved. Re-checked {n} stored results.")
+        self._redirect("/settings?m=Saved.")
 
     def domains(self, conn):
         rows = conn.execute("SELECT * FROM overrides ORDER BY kind, domain").fetchall()
@@ -404,35 +353,13 @@ Suggestions the tool found in your results are at the bottom of the Dashboard re
             d = d if "/" in d.replace("://", "") and "." in d else root_domain(host_of(d))
             conn.execute("INSERT OR REPLACE INTO overrides VALUES(?,?)", (d, f["kind"][0]))
         conn.commit()
-        tracker.reclassify(conn, config_from_db(conn))
-        self._redirect("/domains?m=Updated.")
-
-    def run_post(self, conn):
-        err = start_job(resume="resume" in self._form())
-        self._send(json.dumps({"error": err}), ctype="application/json")
-
-    def status_json(self, conn):
-        self._send(json.dumps(status(conn)), ctype="application/json")
-
-    def export(self, conn):
-        run = analysis.finished_runs(conn, 1)
-        out = io.StringIO()
-        w = csv.writer(out)
-        w.writerow(["keyword", "niche", "rank", "host", "url", "title", "is_parasite", "platform", "category", "confidence"])
-        if run:
-            w.writerows(tuple(r) for r in conn.execute(
-                """SELECT k.keyword, k.niche, r.rank_group, r.host, r.url, r.title, r.is_parasite, r.platform,
-                   r.category, r.confidence FROM results r JOIN keywords k ON k.id=r.keyword_id
-                   WHERE r.run_id=? ORDER BY k.keyword, r.rank_group""", (run[-1]["id"],)))
-        self._send(out.getvalue(), ctype="text/csv; charset=utf-8",
-                   headers=[("Content-Disposition", 'attachment; filename="serps.csv"')])
+        self._redirect("/domains?m=Updated. It applies to your next search.")
 
 
 def main() -> None:
     if not APP_PASSWORD:
         sys.exit("Set the APP_PASSWORD environment variable (the password you will use to log in).")
     db.connect(DB_PATH).close()
-    threading.Thread(target=scheduler, daemon=True).start()
     port = int(os.environ.get("PORT", "8000"))
     print(f"Open http://localhost:{port}", file=sys.stderr)
     ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()

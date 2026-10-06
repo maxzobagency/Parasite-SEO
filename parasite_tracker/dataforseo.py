@@ -77,3 +77,8 @@ class DataForSEO:
         """Returns the task object; caller checks status_code (IN_QUEUE => retry later)."""
         resp = self._request("GET", f"/serp/{self.engine}/organic/task_get/advanced/{task_id}")
         return (resp.get("tasks") or [{}])[0]
+
+    def live(self, task: dict) -> dict:
+        """Instant SERP for one keyword (billed higher than the queue). Returns the task object."""
+        resp = self._request("POST", f"/serp/{self.engine}/organic/live/advanced", [task])
+        return (resp.get("tasks") or [{}])[0]

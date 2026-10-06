@@ -48,24 +48,28 @@ class WebTests(unittest.TestCase):
         type(self).cookie = r.getheader("Set-Cookie").split(";")[0]
         self.assertEqual(self.req("GET", "/")[0], 200)
 
-        st, body, _ = self.req("POST", "/run", {})                       # no credentials yet
-        self.assertIn("Settings", json.loads(body)["error"])
+        st, body, _ = self.req("POST", "/search", {"text": "best vpn", "login": "", "password": ""})
+        self.assertIn("login", json.loads(body)["error"])
 
-        self.req("POST", "/settings", {"login": "a@b.c", "password": "x", "depth": "10", "cat": ["ugc_blog", "forum_qa"]})
-        self.req("POST", "/keywords", {"action": "save", "mode": "add", "text": "best vpn, vpn\nbest crm\tsaas\n"})
-        self.assertIn("best vpn", self.req("GET", "/keywords")[1])
-        self.assertIn("saved - leave blank", self.req("GET", "/settings")[1])
-
-        self.assertIsNone(json.loads(self.req("POST", "/run", {})[1])["error"])
+        text = "best vpn, vpn\nbest crm\tsaas\n"
+        st, body, _ = self.req("POST", "/search", {"text": text, "login": "a@b.c", "password": "x", "depth": "10"})
+        job = json.loads(body)["job"]
         for _ in range(100):
-            time.sleep(0.2)
-            s = json.loads(self.req("GET", "/status.json")[1])
-            if not s["running"] and s["total"]:
+            time.sleep(0.1)
+            s = json.loads(self.req("GET", f"/job/{job}.json")[1])
+            if s["finished"]:
                 break
-        self.assertEqual((s["done"], s["total"]), (2, 2), s)
-        st, rep, _ = self.req("GET", "/report")
+        self.assertEqual((s["done"], s["total"], s["n_errors"]), (2, 2, 0), s)
+        st, rep, _ = self.req("GET", f"/job/{job}/report")
         self.assertIn("quora.com", rep)
-        self.assertIn("best crm", self.req("GET", "/export.csv")[1])
+        self.assertIn("best crm", self.req("GET", f"/job/{job}/export.csv")[1])
+        self.assertEqual(self.req("GET", "/job/nope.json")[0], 404)
+
+        # nothing about the keywords or the password was persisted
+        import sqlite3
+        raw = "".join(str(r) for t in ("keywords", "settings", "results") for r in
+                      sqlite3.connect(os.environ["DB_PATH"]).execute(f"SELECT * FROM {t}"))
+        self.assertNotIn("best vpn", raw)
 
         self.req("POST", "/domains", {"action": "add", "domain": "real.com", "kind": "parasite"})
         self.assertIn("real.com", self.req("GET", "/domains")[1])

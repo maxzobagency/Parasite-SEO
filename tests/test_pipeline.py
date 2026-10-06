@@ -24,6 +24,12 @@ class FakeAPI:
     def ready_ids(self):
         return set(self.tasks)
 
+    def live(self, task):
+        urls = self.serps[task["keyword"]]
+        items = [{"type": "organic", "url": u, "title": u, "rank_group": i + 1, "rank_absolute": i + 1}
+                 for i, u in enumerate(urls)]
+        return {"status_code": 20000, "cost": 0.002, "result": [{"items": items}]}
+
     def get_task(self, tid):
         urls = self.serps[self.tasks[tid]]
         items = [{"type": "organic", "url": u, "title": u, "rank_group": i + 1, "rank_absolute": i + 1}
