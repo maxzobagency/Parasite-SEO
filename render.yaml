@@ -1,0 +1,18 @@
+# Render Blueprint: Dashboard -> New -> Blueprint -> pick this repo/branch.
+# A persistent disk is required so your keywords and history survive restarts
+# (disks need a paid instance; "starter" is the cheapest).
+services:
+  - type: web
+    name: parasite-tracker
+    runtime: docker
+    plan: starter
+    healthCheckPath: /healthz
+    envVars:
+      - key: APP_PASSWORD      # you type this in the Render dashboard (the password for the web UI)
+        sync: false
+      - key: DB_PATH
+        value: /var/data/parasite.db
+    disk:
+      name: data
+      mountPath: /var/data
+      sizeGB: 1

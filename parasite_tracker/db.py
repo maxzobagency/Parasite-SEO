@@ -46,6 +46,10 @@ CREATE TABLE IF NOT EXISTS results (
   reason TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_results_run ON results(run_id, keyword_id);
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS overrides (
   domain TEXT PRIMARY KEY,
   kind TEXT NOT NULL CHECK(kind IN ('parasite','ignore'))
@@ -54,7 +58,19 @@ CREATE TABLE IF NOT EXISTS overrides (
 
 
 def connect(path: str | Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(path))
+    conn = sqlite3.connect(str(path), timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(SCHEMA)
     return conn
+
+
+def get_setting(conn, key: str, default: str = "") -> str:
+    r = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+    return r["value"] if r else default
+
+
+def set_setting(conn, key: str, value: str) -> None:
+    conn.execute("INSERT INTO settings(key, value) VALUES(?,?) "
+                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
+    conn.commit()

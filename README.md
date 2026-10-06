@@ -7,7 +7,20 @@ niche, what changed since the last run, and which unknown domains look like para
 
 Zero dependencies: Python 3.11+ only. Data lives in a local SQLite file.
 
-## Setup (2 minutes)
+## Web app (recommended: no terminal, keywords saved, live progress)
+```bash
+APP_PASSWORD=choose-a-password python -m parasite_tracker.webapp     # then open http://localhost:8000
+```
+Log in, enter your DataForSEO details under **Settings**, paste keywords under **Keywords** (saved for next
+time), click **Check now** on the Dashboard and watch the progress bar; the report appears when it's done.
+Optional auto-check (daily/weekly) is in Settings.
+
+**Deploy on Render:** New → Blueprint → pick this repo + branch (it reads `render.yaml`), set `APP_PASSWORD`
+when asked. It needs a persistent disk (paid "Starter" instance) so keywords/history survive restarts.
+The same `Dockerfile` also works on Railway/Fly.io. Always set a strong `APP_PASSWORD`: the app spends your
+DataForSEO credit.
+
+## Command line (alternative)
 ```bash
 cp config.example.toml config.toml
 cp .env.example .env                    # put your DataForSEO login + API password here

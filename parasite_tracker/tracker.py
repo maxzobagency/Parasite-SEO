@@ -34,6 +34,20 @@ def sync_keywords(conn: sqlite3.Connection, rows: list[dict]) -> int:
     return len(rows)
 
 
+def add_keywords(conn: sqlite3.Connection, rows: list[dict], replace: bool = False) -> int:
+    if replace:
+        conn.execute("UPDATE keywords SET active = 0")
+    for r in rows:
+        conn.execute(
+            """INSERT INTO keywords(keyword, niche, location_code, language_code, device, active)
+               VALUES(?,?,?,?,?,1)
+               ON CONFLICT(keyword, location_code, language_code, device)
+               DO UPDATE SET niche=excluded.niche, active=1""",
+            (r["keyword"], r["niche"], r["location_code"], r["language_code"], r["device"]))
+    conn.commit()
+    return len(rows)
+
+
 def estimate_cost(n_keywords: int, depth: int, priority: int) -> float:
     """Rough USD estimate. Standard queue ~ $0.0006 per 10 results, high priority ~ 2x.
     Check dataforseo.com/pricing - rates change."""
@@ -51,8 +65,12 @@ def start_run(conn, cfg: Config) -> int:
 
 
 def latest_open_run(conn) -> int | None:
-    r = conn.execute("SELECT id FROM runs WHERE finished_at IS NULL ORDER BY id DESC LIMIT 1").fetchone()
-    return r["id"] if r else None
+    """The newest run, if any of its keywords is still pending/errored (so it can be resumed)."""
+    r = conn.execute("""SELECT id FROM runs ORDER BY id DESC LIMIT 1""").fetchone()
+    if not r:
+        return None
+    left = conn.execute("SELECT COUNT(*) FROM tasks WHERE run_id=? AND status != 'done'", (r["id"],)).fetchone()[0]
+    return r["id"] if left else None
 
 
 def submit(conn, api: DataForSEO, cfg: Config, run_id: int) -> int:
@@ -139,9 +157,9 @@ def collect(conn, api: DataForSEO, cfg: Config, run_id: int, poll: int = 15,
                           (run_id,)).fetchone()[0]
     if errors:
         log(f"  {errors} keyword(s) errored - run `run --resume` to retry them")
-    else:
-        conn.execute("UPDATE runs SET finished_at=datetime('now') WHERE id=?", (run_id,))
-        conn.commit()
+    # finish even when a few keywords failed, so the report shows everything that worked
+    conn.execute("UPDATE runs SET finished_at=datetime('now') WHERE id=?", (run_id,))
+    conn.commit()
     return errors == 0
 
 

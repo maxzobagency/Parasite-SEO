@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import csv
+import io
+import json
 import os
 import tomllib
 from dataclasses import dataclass, field
@@ -21,6 +23,7 @@ class Config:
     db: str = "parasite.db"
     keywords: str = "keywords.csv"
     report: str = "report.html"
+    schedule_days: int = 0             # web app: auto-run every N days (0 = off)
     login: str = ""
     password: str = ""
 
@@ -70,4 +73,41 @@ def read_keywords(path: str | Path, cfg: Config) -> list[dict]:
             if key not in seen:
                 seen.add(key)
                 rows.append(row)
+    return rows
+
+
+def config_from_db(conn) -> Config:
+    """Web-app settings (stored in the DB). Env vars DATAFORSEO_LOGIN/PASSWORD win if set."""
+    cfg = Config()
+    s = {r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM settings")}
+    for k in ("location_code", "depth", "priority", "top_n", "schedule_days"):
+        if s.get(k, "").lstrip("-").isdigit():
+            setattr(cfg, k, int(s[k]))
+    for k in ("language_code", "device"):
+        if s.get(k):
+            setattr(cfg, k, s[k])
+    if s.get("enabled_categories"):
+        cfg.enabled_categories = json.loads(s["enabled_categories"])
+    cfg.login = os.environ.get("DATAFORSEO_LOGIN") or s.get("login", "")
+    cfg.password = os.environ.get("DATAFORSEO_PASSWORD") or s.get("password", "")
+    return cfg
+
+
+def parse_keywords_text(text: str, cfg: Config) -> list[dict]:
+    """Pasted text: one keyword per line, optionally `keyword,niche[,location_code,language_code]`
+    (comma or tab separated - pasting straight from a spreadsheet works)."""
+    rows, seen = [], set()
+    for line in text.splitlines():
+        delim = "\t" if "\t" in line else ","
+        cells = [c.strip() for c in next(csv.reader([line], delimiter=delim), [])]
+        if not cells or not cells[0] or cells[0].lower() == "keyword":
+            continue
+        cells += [""] * (4 - len(cells))
+        loc = int(cells[2]) if cells[2].isdigit() else cfg.location_code
+        row = {"keyword": cells[0], "niche": cells[1], "location_code": loc,
+               "language_code": cells[3] or cfg.language_code, "device": cfg.device}
+        key = (row["keyword"].lower(), loc, row["language_code"], row["device"])
+        if key not in seen:
+            seen.add(key)
+            rows.append(row)
     return rows

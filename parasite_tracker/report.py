@@ -7,6 +7,10 @@ from pathlib import Path
 TEMPLATE = Path(__file__).with_name("report_template.html")
 
 
-def render(data: dict, out: str | Path) -> None:
+def render_html(data: dict) -> str:
     blob = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
-    Path(out).write_text(TEMPLATE.read_text().replace("__DATA__", blob), encoding="utf-8")
+    return TEMPLATE.read_text().replace("__DATA__", blob)
+
+
+def render(data: dict, out: str | Path) -> None:
+    Path(out).write_text(render_html(data), encoding="utf-8")
