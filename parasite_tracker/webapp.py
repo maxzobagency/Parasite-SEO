@@ -127,10 +127,16 @@ async function startSearch(){try{
  if(j.error){$('#err').textContent=j.error;$('#go').disabled=false;$('#go').textContent='Search now';return}
  job=j.job;$('#res').hidden=false;clearInterval(timer);timer=setInterval(tick,1500);tick()
 }catch(e){$('#err').textContent='Could not start the search: '+e.message;$('#go').disabled=false;$('#go').textContent='Search now'}}
+async function retryFailed(){$('#retry').hidden=true;$('#go').disabled=true;
+ const fd=new URLSearchParams({login:$('#login').value,password:$('#password').value});
+ const j=await (await fetch('/job/'+job+'/retry',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:fd})).json();
+ if(j.error){$('#err').textContent=j.error;$('#go').disabled=false;return}
+ clearInterval(timer);timer=setInterval(tick,1500);tick()}
 async function tick(){const s=await (await fetch('/job/'+job+'.json')).json();
  $('#bar').style.width=(s.total?100*s.done/s.total:0)+'%';
  $('#txt').textContent=`${s.done}/${s.total} keywords · cost so far $${s.cost}`+(s.finished?' · done':'');
- $('#err').textContent=s.fatal||(s.n_errors?`${s.n_errors} keyword(s) failed, e.g. ${s.errors[0]}`:'');
+ $('#err').textContent=s.fatal||(s.finished&&s.n_errors?`${s.n_errors} keyword(s) failed (e.g. ${s.errors[0]}). Click Retry - failed searches usually aren't billed.`:'');
+ $('#retry').hidden=!(s.finished&&s.n_errors&&!s.fatal);
  const now=Date.now();
  if(s.done!==lastShown&&(s.finished||now-lastRefresh>6000)){lastShown=s.done;lastRefresh=now;$('#frame').src='/job/'+job+'/report?'+now;$('#dl').href='/job/'+job+'/export.csv';$('#dl').hidden=false}
  if(s.finished||s.fatal){clearInterval(timer);$('#go').disabled=false;$('#go').textContent='Search now'}}
@@ -210,6 +216,8 @@ class Handler(BaseHTTPRequestHandler):
                   ("GET", "/domains"): self.domains, ("POST", "/domains"): self.domains_post,
                   ("POST", "/logout"): self.logout}
         if path.startswith("/job/"):
+            if method == "POST" and path.endswith("/retry"):
+                return self.job_retry(conn)
             fn = (self.job_json if path.endswith(".json") else self.job_report if path.endswith("/report")
                   else self.job_export if path.endswith("/export.csv") else None)
             return fn(conn) if fn and method == "GET" else self._send("not found", 404)
@@ -266,6 +274,7 @@ class Handler(BaseHTTPRequestHandler):
 <p><button id="go" onclick="startSearch()">Search now</button> <span id="est" class="hint"></span>
 <input type="file" id="f" accept=".csv,.txt" style="width:auto;margin-left:10px"></p><p id="err" class="err"></p></form>
 <div id="res" hidden><div class="card"><div class="bar"><i id="bar"></i></div><p id="txt" class="hint"></p>
+<button id="retry" class="sec" hidden onclick="retryFailed()">Retry failed keywords</button>
 <a id="dl" class="btn" hidden href="#" style="background:var(--card);color:var(--fg);border:1px solid var(--line)">Download CSV</a>
 <span class="hint"> Results are kept in memory for about an hour, so download the CSV if you need them.</span></div>
 <iframe id="frame"></iframe></div>{SEARCH_JS}"""
@@ -296,6 +305,17 @@ class Handler(BaseHTTPRequestHandler):
     def _job(self, path: str):
         jid = path.split("/")[2].removesuffix(".json")
         return live.get(jid)
+
+    def job_retry(self, conn):
+        job = self._job(urlparse(self.path).path)
+        f = self._form()
+        cfg = config_from_db(conn)
+        login, password = f.get("login", [""])[0].strip() or cfg.login, f.get("password", [""])[0] or cfg.password
+        if not job:
+            return self._json({"error": "These results expired. Run the search again."}, 404)
+        if not login or not password:
+            return self._json({"error": "Enter your DataForSEO login and API password."})
+        self._json({"retrying": live.retry(job, DataForSEO(login, password))})
 
     def job_json(self, conn):
         job = self._job(urlparse(self.path).path)
