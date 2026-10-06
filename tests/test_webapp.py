@@ -47,7 +47,12 @@ class WebTests(unittest.TestCase):
         st, _, r = self.req("POST", "/login", {"password": "pw123"})
         self.assertEqual(st, 303)
         type(self).cookie = r.getheader("Set-Cookie").split(";")[0]
+        page = self.req("GET", "/")[1]
         self.assertEqual(self.req("GET", "/")[0], 200)
+        # an element id must never equal a global function name used in an inline onclick
+        # (the browser resolves `go()` to the <button id="go"> inside the form -> "not a function")
+        self.assertIn('onclick="startSearch()"', page)
+        self.assertNotIn("function go(", page)
 
         st, body, _ = self.req("POST", "/search", {"text": "best vpn", "login": "", "password": ""})
         self.assertIn("login", json.loads(body)["error"])

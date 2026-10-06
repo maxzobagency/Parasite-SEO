@@ -105,27 +105,35 @@ const $=s=>document.querySelector(s);let job=null,timer=null,lastShown=-1,lastRe
 const LS=k=>{try{return localStorage.getItem(k)||''}catch(e){return ''}};
 $('#loc').onchange=()=>{$('#lang').value=$('#loc').selectedOptions[0].dataset.lang};
 $('#login').value=LS('dfs_login');$('#password').value=LS('dfs_pass');
-function est(){const n=$('#text').value.split('\\n').filter(l=>l.trim()&&l.trim().toLowerCase()!='keyword').length;
- $('#est').textContent=n?`${n} keywords · about $${(n*Math.ceil($('#depth').value/10)*0.002).toFixed(2)} (billed by DataForSEO)`:''}
+function cost(){const n=$('#text').value.split('\\n').filter(l=>l.trim()&&l.trim().toLowerCase()!='keyword').length;return [n,n*Math.ceil($('#depth').value/10)*0.002]}
+function est(){const [n,c]=cost();armed=false;$('#go').textContent='Search now';
+ $('#est').textContent=n?`${n} keywords · about $${c<1?c.toFixed(3):c.toFixed(2)} (billed by DataForSEO)`:''}
+let armed=false;
 ['#text','#depth'].forEach(i=>$(i).addEventListener('input',est));est();
 $('#f').onchange=e=>{const r=new FileReader();r.onload=()=>{$('#text').value=r.result;est()};r.readAsText(e.target.files[0])};
-async function go(){
- if(!$('#text').value.trim()){$('#err').textContent='Paste some keywords first.';return}
- if(!confirm('Search now? '+$('#est').textContent))return;
+async function startSearch(){try{
+ const [n,c]=cost();
+ if(!n){$('#err').textContent='Paste some keywords first.';return}
+ if(!$('#login').value.trim()||!$('#password').value){$('#err').textContent='Enter your DataForSEO login and API password.';return}
+ if(c>=0.5&&!armed){armed=true;$('#go').textContent=`Click again to confirm (~$${c.toFixed(2)})`;return}
+ armed=false;$('#go').textContent='Searching…';
  const fd=new URLSearchParams(new FormData($('#form')));
  if($('#remember').checked){try{localStorage.setItem('dfs_login',$('#login').value);localStorage.setItem('dfs_pass',$('#password').value)}catch(e){}}
  else{try{localStorage.removeItem('dfs_login');localStorage.removeItem('dfs_pass')}catch(e){}}
  $('#err').textContent='';$('#go').disabled=true;lastShown=-1;
- const j=await (await fetch('/search',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:fd})).json();
- if(j.error){$('#err').textContent=j.error;$('#go').disabled=false;return}
- job=j.job;$('#res').hidden=false;clearInterval(timer);timer=setInterval(tick,1500);tick()}
+ const r=await fetch('/search',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:fd});
+ if(r.status===0||r.redirected||!r.ok){throw new Error(r.redirected?'Your session expired - reload the page and log in again.':'Server error '+r.status)}
+ const j=await r.json();
+ if(j.error){$('#err').textContent=j.error;$('#go').disabled=false;$('#go').textContent='Search now';return}
+ job=j.job;$('#res').hidden=false;clearInterval(timer);timer=setInterval(tick,1500);tick()
+}catch(e){$('#err').textContent='Could not start the search: '+e.message;$('#go').disabled=false;$('#go').textContent='Search now'}}
 async function tick(){const s=await (await fetch('/job/'+job+'.json')).json();
  $('#bar').style.width=(s.total?100*s.done/s.total:0)+'%';
  $('#txt').textContent=`${s.done}/${s.total} keywords · cost so far $${s.cost}`+(s.finished?' · done':'');
  $('#err').textContent=s.fatal||(s.n_errors?`${s.n_errors} keyword(s) failed, e.g. ${s.errors[0]}`:'');
  const now=Date.now();
  if(s.done!==lastShown&&(s.finished||now-lastRefresh>6000)){lastShown=s.done;lastRefresh=now;$('#frame').src='/job/'+job+'/report?'+now;$('#dl').href='/job/'+job+'/export.csv';$('#dl').hidden=false}
- if(s.finished||s.fatal){clearInterval(timer);$('#go').disabled=false}}
+ if(s.finished||s.fatal){clearInterval(timer);$('#go').disabled=false;$('#go').textContent='Search now'}}
 </script>"""
 
 
@@ -255,7 +263,7 @@ class Handler(BaseHTTPRequestHandler):
 <div><label>Language code</label><input id="lang" name="language_code" value="{e(cfg.language_code)}"></div>
 <div><label>Device</label><select name="device">{sel(cfg.device, [("desktop", "Desktop"), ("mobile", "Mobile")])}</select></div>
 <div><label>How deep <span class="hint">(parasites are found within these results)</span></label><select id="depth" name="depth">{sel(min(cfg.depth, 30), [(10, "Top 10 (cheapest)"), (20, "Top 20 (recommended)"), (30, "Top 30")])}</select></div></div>
-<p><button id="go" onclick="go()">Search now</button> <span id="est" class="hint"></span>
+<p><button id="go" onclick="startSearch()">Search now</button> <span id="est" class="hint"></span>
 <input type="file" id="f" accept=".csv,.txt" style="width:auto;margin-left:10px"></p><p id="err" class="err"></p></form>
 <div id="res" hidden><div class="card"><div class="bar"><i id="bar"></i></div><p id="txt" class="hint"></p>
 <a id="dl" class="btn" hidden href="#" style="background:var(--card);color:var(--fg);border:1px solid var(--line)">Download CSV</a>
