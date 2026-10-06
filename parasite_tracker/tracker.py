@@ -104,7 +104,7 @@ def store_items(conn, det: Detector, run_id: int, keyword_id: int, items: list[d
         if it.get("type") != "organic" or not it.get("url"):
             continue
         host = host_of(it["url"])
-        v = det.classify(it["url"])
+        v = det.classify(it["url"], it.get("title") or "")
         conn.execute(
             """INSERT INTO results(run_id, keyword_id, rank_group, rank_absolute, type, host, root,
                url, title, is_parasite, platform, category, confidence, reason)
@@ -166,9 +166,9 @@ def collect(conn, api: DataForSEO, cfg: Config, run_id: int, poll: int = 15,
 def reclassify(conn, cfg: Config) -> int:
     """Re-apply the detector to every stored result (after `mark` or list edits)."""
     det = get_detector(conn, cfg)
-    rows = conn.execute("SELECT rowid, url FROM results").fetchall()
+    rows = conn.execute("SELECT rowid, url, title FROM results").fetchall()
     for r in rows:
-        v = det.classify(r["url"])
+        v = det.classify(r["url"], r["title"] or "")
         conn.execute("UPDATE results SET is_parasite=?, platform=?, category=?, confidence=?, "
                      "reason=? WHERE rowid=?",
                      (int(v.is_parasite), v.platform, v.category, v.confidence, v.reason, r["rowid"]))

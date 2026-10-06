@@ -15,6 +15,7 @@ th{font-size:12px;color:var(--mut);font-weight:600;cursor:pointer;white-space:no
 .wrap{overflow-x:auto}.bar{height:8px;background:var(--line);border-radius:4px;min-width:60px}.bar i{display:block;height:100%;background:var(--acc);border-radius:4px}
 .tag{display:inline-block;padding:1px 7px;border-radius:9px;background:var(--card);border:1px solid var(--line);font-size:12px;margin:1px 2px 1px 0}
 .up{color:var(--good)}.down{color:var(--bad)}.low{color:var(--warn)}
+button{background:var(--acc);color:#fff;border:0;border-radius:5px;padding:3px 9px;font:inherit;font-size:12px;cursor:pointer}button.sec{background:var(--card);color:var(--fg);border:1px solid var(--line)}
 input,select{background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:6px 9px;font:inherit}
 .filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px}a{color:var(--acc)}
 .serp{display:flex;gap:2px}.serp i{width:14px;height:14px;border-radius:3px;background:var(--line)}.serp i.p{background:var(--bad)}
@@ -43,8 +44,8 @@ svg{width:100%;height:auto;max-height:140px}
 </div>
 <div class="wrap"><table id="kws"></table></div>
 
-<h2>Suspected parasite hosts not on your list yet</h2>
-<div class="sub">Detected from behaviour in your own SERPs. Confirm with <code>python -m parasite_tracker mark DOMAIN parasite</code> (or <code>ignore</code>).</div>
+<h2>New parasite candidates (not on the built-in list)</h2>
+<div class="sub" id="candhelp">Found by looking at the top results of your own searches: user-generated URL patterns, many sub-domains, ranking across niches. Sites marked <b>?</b> above are the same kind of guess. Confirm or dismiss them: confirmed sites are then always counted.</div>
 <div class="wrap"><table id="cands"></table></div>
 </main>
 <script>
@@ -71,8 +72,12 @@ table('#niches',[['Niche'],['Keywords','n'],['With parasite','n'],['% of keyword
 const lab={new:'<span class="up">NEW</span>',lost:'<span class="down">LOST</span>',moved:'<span class="low">MOVED</span>'};
 table('#changes',[['Change'],['Keyword'],['Platform'],['Rank','n'],['Was','n'],['URL']],
  D.changes.slice(0,300).map(c=>`<tr><td>${lab[c.kind]}</td><td>${esc(c.keyword)}</td><td>${esc(c.platform)}</td><td class="n">${c.rank??'—'}</td><td class="n">${c.prev_rank??'—'}</td><td class="url"><a href="${esc(c.url)}" target="_blank" rel="noopener">${esc(c.url)}</a></td></tr>`));
-table('#cands',[['Domain'],['Score','n'],['Keywords','n'],['Niches','n'],['Sub-domains','n'],['Why'],['Example']],
- D.candidates.map(c=>`<tr><td><b>${esc(c.domain)}</b></td><td class="n">${c.score}</td><td class="n">${c.keywords}</td><td class="n">${c.niches}</td><td class="n">${c.subdomains}</td><td>${esc(c.signals)}</td><td class="url"><a href="${esc(c.example)}" target="_blank" rel="noopener">${esc(c.example)}</a></td></tr>`));
+async function mark(d,kind){await fetch('/domains',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
+ body:new URLSearchParams({action:'add',domain:d,kind,job:D.job||''})});location.reload()}
+const btns=c=>D.web?`<td><button onclick="mark('${esc(c.domain)}','parasite')">Parasite</button> <button class="sec" onclick="mark('${esc(c.domain)}','ignore')">Not one</button></td>`:'';
+table('#cands',[['Domain'],['Score','n'],['Keywords','n'],['Niches','n'],['Sub-domains','n'],['Why'],['Example']].concat(D.web?[['']]:[]),
+ D.candidates.map(c=>`<tr><td><b>${esc(c.domain)}</b></td><td class="n">${c.score}</td><td class="n">${c.keywords}</td><td class="n">${c.niches}</td><td class="n">${c.subdomains}</td><td>${esc(c.signals)}</td><td class="url"><a href="${esc(c.example)}" target="_blank" rel="noopener">${esc(c.example)}</a></td>${btns(c)}</tr>`));
+if(!D.web)$('#candhelp').innerHTML+=' Offline: <code>python -m parasite_tracker mark DOMAIN parasite</code> (or <code>ignore</code>).';
 const opt=(id,vals,all)=>$(id).innerHTML=`<option value="">${all}</option>`+vals.map(v=>`<option>${esc(v)}</option>`).join('');
 opt('#fn',[...new Set(D.keywords.map(k=>k.niche))].sort(),'all niches');opt('#fp',D.platforms.map(p=>p.platform),'all platforms');
 function drawK(){const q=$('#q').value.toLowerCase(),n=$('#fn').value,p=$('#fp').value,s=$('#fs').value;

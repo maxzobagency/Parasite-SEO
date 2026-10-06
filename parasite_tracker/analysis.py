@@ -100,9 +100,10 @@ def build(conn, top_n: int = 10, run_id: int | None = None) -> dict | None:
 
     keyword_rows.sort(key=lambda r: (r["best"] is None, r["best"] or 99, -r["count"]))
 
-    known_roots = {i["root"] for items in cur_res.values() for i in items if i["is_parasite"]}
+    known_roots = {i["root"] for items in cur_res.values() for i in items
+                   if i["is_parasite"] and i["category"] != "suspected"}
     flat = [{"keyword": kws[kid]["keyword"], "niche": kws[kid]["niche"], "url": i["url"],
-             "host": i["host"], "root": i["root"]}
+             "host": i["host"], "root": i["root"], "title": i["title"] or ""}
             for kid, items in cur_res.items() if kid in kws for i in items if i["rank_group"] <= 30]
     ignored = {r["domain"] for r in conn.execute("SELECT domain FROM overrides WHERE kind='ignore'")}
     candidates = [c for c in discover_candidates(flat, known_roots) if c["domain"] not in ignored][:25]

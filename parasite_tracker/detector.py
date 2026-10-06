@@ -14,7 +14,49 @@ _SECOND_LEVEL = {
     "com.ar", "com.co", "com.ng", "com.pk", "com.ph", "com.my", "com.hk", "co.id",
 }
 DEFAULT_ENABLED = ["ugc_blog", "forum_qa", "docs_hosting", "code_static_hosting",
-                   "professional_social", "news_contributor"]
+                   "professional_social", "news_contributor", "suspected"]
+
+# ---- smart detection: signals that a page is user-generated even if the host is unknown ----------
+_STRONG_PATH = ("/@", "/u/", "/user/", "/users/", "/profile", "/members/", "/member/", "/pulse/",
+                "/thread", "/forum", "/questions/", "/question/", "/answers/", "/discussion",
+                "/community/", "/groups/", "/people/", "/ask/")
+_WEAK_PATH = ("/author/", "/post/", "/posts/", "/topic", "/blog/", "/notes/", "/ideas/",
+              "/portfolio/", "/wiki/", "/p/", "/articles/", "/article/")
+_STRONG_HOST = ("forum.", "forums.", "community.", "answers.", "discuss.", "ask.", "members.", "discussion.")
+_WEAK_HOST = ("blog.", "sites.", "pages.", "wiki.", "profiles.", "user.", "my.")
+_TITLE_CUES = ("forum", "community", "discussion", "thread", "q&a", "questions and answers",
+               "user reviews", "member", "profile")
+SUSPECT_THRESHOLD = 3   # URL+title signals needed to flag an unknown site inline
+CANDIDATE_THRESHOLD = 2  # signals needed to list it as a suggestion
+
+
+def suspect_score(url: str, title: str = "") -> tuple[int, list[str]]:
+    """How much does this *single result* look like user-generated / hosted content?
+    Pure URL + title heuristics, so it works on the very first search with no history."""
+    host = host_of(url)
+    path = (urlparse(url if "//" in url else "//" + url).path or "/").lower()
+    score, why = 0, []
+    for pat in _STRONG_PATH:
+        if pat in path:
+            score += 3 if pat in ("/@", "/u/") else 2
+            why.append(f"user-content URL path '{pat}'")
+            break
+    else:
+        for pat in _WEAK_PATH:
+            if pat in path:
+                score += 1; why.append(f"blog/post-style URL path '{pat}'"); break
+    if host.startswith(_STRONG_HOST):
+        score += 2; why.append(f"host starts with '{host.split('.')[0]}.'")
+    elif host.startswith(_WEAK_HOST):
+        score += 1; why.append(f"host starts with '{host.split('.')[0]}.'")
+    t = (title or "").lower()
+    if any(c in t for c in _TITLE_CUES):
+        score += 1; why.append("title mentions forum/community/profile")
+    # username-style sub-domain on a non-obvious host, e.g. john-reviews.somesite.com/best-x
+    labels = host.split(".")
+    if len(labels) >= 3 and root_domain(host) != host and labels[0] not in ("www", "m", "shop", "store", "blog", "support", "help", "docs", "news", "app"):
+        score += 1; why.append(f"personal-style sub-domain '{labels[0]}'")
+    return score, why
 
 
 def host_of(url: str) -> str:
@@ -51,6 +93,8 @@ class Detector:
         for cat, body in data.get("categories", {}).items():
             if cat not in self.enabled and cat != "edu_gov":
                 continue
+            if cat == "suspected":
+                continue
             for raw in body.get("rules", []):
                 host, _, p = raw.partition("/")
                 self.rules.append((host, "/" + p if p else "", cat, raw))
@@ -64,7 +108,7 @@ class Detector:
             return host.startswith(rule_host)
         return host == rule_host or host.endswith("." + rule_host)
 
-    def classify(self, url: str) -> Verdict:
+    def classify(self, url: str, title: str = "") -> Verdict:
         host = host_of(url)
         path = urlparse(url if "//" in url else "//" + url).path or "/"
         rd = root_domain(host)
@@ -94,6 +138,10 @@ class Detector:
             host.endswith((".edu", ".gov")) or ".ac." in host or ".edu." in host or ".gov." in host
         ):
             return Verdict(True, rd, "edu_gov", "institutional domain (check relevance manually)", "low")
+        if "suspected" in self.enabled:
+            score, why = suspect_score(url, title)
+            if score >= SUSPECT_THRESHOLD:
+                return Verdict(True, rd, "suspected", "looks user-generated: " + "; ".join(why), "low")
         return Verdict(False)
 
 
@@ -107,16 +155,21 @@ def discover_candidates(rows: list[dict], known_parasite_roots: set[str],
       * many distinct sub-domains of one root  -> it hands out sub-domains to users
         (blogspot-style hosting)
       * one root appearing in many niches with many distinct URL paths -> generic UGC site
-    rows: dicts with keys keyword, niche, url, host, root.
+      * a single result whose URL/title looks user-generated (see suspect_score)
+    rows: dicts with keys keyword, niche, url, host, root, title.
     """
     by_root: dict[str, dict] = defaultdict(lambda: {
-        "hosts": set(), "keywords": set(), "niches": set(), "urls": set()})
+        "hosts": set(), "keywords": set(), "niches": set(), "urls": set(), "susp": 0, "why": [],
+        "susp_url": ""})
     for r in rows:
         d = by_root[r["root"]]
         d["hosts"].add(r["host"])
         d["keywords"].add(r["keyword"])
         d["niches"].add(r["niche"] or "")
         d["urls"].add(r["url"])
+        sc, why = suspect_score(r["url"], r.get("title", ""))
+        if sc > d["susp"]:
+            d["susp"], d["why"], d["susp_url"] = sc, why, r["url"]
 
     out = []
     for root, d in by_root.items():
@@ -131,10 +184,13 @@ def discover_candidates(rows: list[dict], known_parasite_roots: set[str],
                 and len(d["urls"]) >= min_niche_keywords:
             score += 1
             signals.append(f"ranks across {len(d['niches'])} niches")
+        if d["susp"] >= CANDIDATE_THRESHOLD:
+            score += d["susp"] - 1
+            signals.append("; ".join(d["why"]))
         if score:
             out.append({"domain": root, "score": score, "keywords": len(d["keywords"]),
                         "niches": len(d["niches"]), "subdomains": sub_hosts,
                         "signals": "; ".join(signals),
-                        "example": sorted(d["urls"])[0]})
+                        "example": d["susp_url"] or sorted(d["urls"])[0]})
     out.sort(key=lambda x: (-x["score"], -x["keywords"]))
     return out

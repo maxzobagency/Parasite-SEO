@@ -56,6 +56,8 @@ class LiveJob:
 
 def start(keywords: list[dict], cfg: Config, api: DataForSEO, overrides: dict[str, str]) -> LiveJob:
     job = LiveJob(keywords, cfg)
+    job.conn.executemany("INSERT OR REPLACE INTO overrides VALUES(?,?)", list(overrides.items()))
+    job.conn.commit()
     det = Detector(cfg.enabled_categories, overrides)
     with _LOCK:
         for jid in [j for j, v in _JOBS.items() if time.time() - v.created > 3600]:
@@ -104,3 +106,11 @@ def start(keywords: list[dict], cfg: Config, api: DataForSEO, overrides: dict[st
 
 def get(job_id: str) -> LiveJob | None:
     return _JOBS.get(job_id)
+
+
+def apply_override(job: LiveJob, domain: str, kind: str) -> None:
+    """User confirmed/dismissed a domain: re-classify this job's results straight away."""
+    with job.lock:
+        job.conn.execute("INSERT OR REPLACE INTO overrides VALUES(?,?)", (domain, kind))
+        job.conn.commit()
+        tracker.reclassify(job.conn, job.cfg)

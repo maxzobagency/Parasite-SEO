@@ -30,11 +30,22 @@ APP_PASSWORD = os.environ.get("APP_PASSWORD", "")
 SESSION_SECONDS = 14 * 24 * 3600
 e = html.escape
 
-LOCATIONS = {2840: "United States", 2826: "United Kingdom", 2124: "Canada", 2036: "Australia",
-             2554: "New Zealand", 2372: "Ireland", 2276: "Germany", 2250: "France", 2724: "Spain",
-             2380: "Italy", 2528: "Netherlands", 2076: "Brazil", 2484: "Mexico", 2356: "India",
-             2710: "South Africa", 2702: "Singapore", 2784: "United Arab Emirates",
-             2586: "Pakistan", 2608: "Philippines"}
+# DataForSEO location code -> (name, default language). Pick any; the language fills in automatically.
+LOCATIONS = {
+    2840: ("United States", "en"), 2826: ("United Kingdom", "en"), 2124: ("Canada", "en"),
+    2036: ("Australia", "en"), 2554: ("New Zealand", "en"), 2372: ("Ireland", "en"),
+    2356: ("India", "en"), 2710: ("South Africa", "en"), 2702: ("Singapore", "en"),
+    2608: ("Philippines", "en"), 2586: ("Pakistan", "en"), 2566: ("Nigeria", "en"),
+    2404: ("Kenya", "en"), 2458: ("Malaysia", "en"), 2344: ("Hong Kong", "en"),
+    2784: ("United Arab Emirates", "en"), 2276: ("Germany", "de"), 2040: ("Austria", "de"),
+    2756: ("Switzerland", "de"), 2250: ("France", "fr"), 2056: ("Belgium", "fr"),
+    2724: ("Spain", "es"), 2484: ("Mexico", "es"), 2032: ("Argentina", "es"),
+    2170: ("Colombia", "es"), 2152: ("Chile", "es"), 2380: ("Italy", "it"),
+    2528: ("Netherlands", "nl"), 2076: ("Brazil", "pt"), 2620: ("Portugal", "pt"),
+    2752: ("Sweden", "sv"), 2578: ("Norway", "no"), 2208: ("Denmark", "da"),
+    2616: ("Poland", "pl"), 2792: ("Turkey", "tr"), 2360: ("Indonesia", "id"),
+    2764: ("Thailand", "th"), 2704: ("Vietnam", "vi"), 2392: ("Japan", "ja"),
+    2410: ("South Korea", "ko"), 2682: ("Saudi Arabia", "ar"), 2818: ("Egypt", "ar")}
 CATEGORIES = {
     "ugc_blog": "Free blogs (Medium, Blogspot, Substack, WordPress.com…)",
     "forum_qa": "Forums & Q&A (Reddit, Quora…)",
@@ -43,6 +54,7 @@ CATEGORIES = {
     "professional_social": "Profiles/articles (LinkedIn Pulse, Pinterest, about.me…)",
     "news_contributor": "Contributor & press-release sites (Forbes Councils, PRNewswire…)",
     "social_video": "Social & video (YouTube, Facebook, TikTok…) – not classic parasites",
+    "suspected": "Smart detection: unknown sites whose URL/title look user-generated (shown with ?)",
     "edu_gov": "Hijacked .edu / .gov pages (low confidence)",
 }
 
@@ -91,6 +103,7 @@ SEARCH_JS = """
 <script>
 const $=s=>document.querySelector(s);let job=null,timer=null,lastShown=-1,lastRefresh=0;
 const LS=k=>{try{return localStorage.getItem(k)||''}catch(e){return ''}};
+$('#loc').onchange=()=>{$('#lang').value=$('#loc').selectedOptions[0].dataset.lang};
 $('#login').value=LS('dfs_login');$('#password').value=LS('dfs_pass');
 function est(){const n=$('#text').value.split('\\n').filter(l=>l.trim()&&l.trim().toLowerCase()!='keyword').length;
  $('#est').textContent=n?`${n} keywords · about $${(n*Math.ceil($('#depth').value/10)*0.002).toFixed(2)} (billed by DataForSEO)`:''}
@@ -223,7 +236,7 @@ class Handler(BaseHTTPRequestHandler):
     def dashboard(self, conn):
         cfg = config_from_db(conn)
         env_creds = bool(cfg.login and cfg.password and os.environ.get("DATAFORSEO_LOGIN"))
-        loc = "".join(f'<option value="{k}" {"selected" if k == cfg.location_code else ""}>{v}</option>' for k, v in LOCATIONS.items())
+        loc = "".join(f'<option value="{k}" data-lang="{v[1]}" {"selected" if k == cfg.location_code else ""}>{v[0]}</option>' for k, v in LOCATIONS.items())
         sel = lambda cur, opts: "".join(f'<option value="{k}" {"selected" if str(k) == str(cur) else ""}>{v}</option>' for k, v in opts)
         if env_creds:
             cred = '<p class="ok">DataForSEO details are set on the server.</p><input type="hidden" id="login" name="login"><input type="hidden" id="password" name="password">'
@@ -238,10 +251,10 @@ class Handler(BaseHTTPRequestHandler):
 <form id="form" class="card" onsubmit="return false">{cred}{remember}
 <label>Keywords <span class="hint">– one per line, optionally <code>keyword, niche</code>. Not saved anywhere.</span></label>
 <textarea id="text" name="text" placeholder="best vpn for netflix, vpn&#10;best crm for small business, saas"></textarea>
-<div class="row"><div><label>Country</label><select name="location_code">{loc}</select></div>
-<div><label>Language code</label><input name="language_code" value="{e(cfg.language_code)}"></div>
+<div class="row"><div><label>Country <span class="hint">(search results as seen from here)</span></label><select id="loc" name="location_code">{loc}</select></div>
+<div><label>Language code</label><input id="lang" name="language_code" value="{e(cfg.language_code)}"></div>
 <div><label>Device</label><select name="device">{sel(cfg.device, [("desktop", "Desktop"), ("mobile", "Mobile")])}</select></div>
-<div><label>How deep</label><select id="depth" name="depth">{sel(min(cfg.depth, 30), [(10, "Top 10 (cheapest)"), (20, "Top 20"), (30, "Top 30")])}</select></div></div>
+<div><label>How deep <span class="hint">(parasites are found within these results)</span></label><select id="depth" name="depth">{sel(min(cfg.depth, 30), [(10, "Top 10 (cheapest)"), (20, "Top 20 (recommended)"), (30, "Top 30")])}</select></div></div>
 <p><button id="go" onclick="go()">Search now</button> <span id="est" class="hint"></span>
 <input type="file" id="f" accept=".csv,.txt" style="width:auto;margin-left:10px"></p><p id="err" class="err"></p></form>
 <div id="res" hidden><div class="card"><div class="bar"><i id="bar"></i></div><p id="txt" class="hint"></p>
@@ -286,6 +299,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send("<p style='font:14px sans-serif;padding:20px'>These results expired. Run the search again.</p>", 404)
         with job.lock:
             data = analysis.build(job.conn, job.cfg.top_n)
+        if data:
+            data["web"], data["job"] = True, job.id
         self._send(render_html(data) if data else "<p style='font:14px sans-serif;padding:20px'>Waiting for the first results…</p>")
 
     def job_export(self, conn):
@@ -308,7 +323,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def settings(self, conn):
         cfg = config_from_db(conn)
-        loc = "".join(f'<option value="{k}" {"selected" if k == cfg.location_code else ""}>{v}</option>' for k, v in LOCATIONS.items())
+        loc = "".join(f'<option value="{k}" data-lang="{v[1]}" {"selected" if k == cfg.location_code else ""}>{v[0]}</option>' for k, v in LOCATIONS.items())
         cats = "".join(f'<label class="cb"><input type="checkbox" name="cat" value="{k}" {"checked" if k in cfg.enabled_categories else ""}> {e(v)}</label>' for k, v in CATEGORIES.items())
         sel = lambda cur, opts: "".join(f'<option value="{k}" {"selected" if str(k) == str(cur) else ""}>{v}</option>' for k, v in opts)
         body = f"""<h1>Settings</h1><form method="post">
@@ -336,8 +351,8 @@ class Handler(BaseHTTPRequestHandler):
         trs = "".join(f'<tr><td>{e(r["domain"])}</td><td>{r["kind"]}</td><td><form method="post"><input type="hidden" name="action" value="remove">'
                       f'<input type="hidden" name="domain" value="{e(r["domain"])}"><button class="sec">Remove</button></form></td></tr>' for r in rows)
         none = '<tr><td colspan=3 class="hint">Nothing custom yet.</td></tr>'
-        body = f"""<h1>Your parasite list</h1><p class="hint">The built-in list covers ~150 platforms. Add your own, or mark a wrong detection as "not a parasite".
-Suggestions the tool found in your results are at the bottom of the Dashboard report.</p>
+        body = f"""<h1>Your parasite list</h1><p class="hint">The built-in list covers ~150 platforms, and every search also looks at your top results for <i>new</i> ones
+(sites marked <b>?</b>, plus a candidates table under the report with one-click buttons). Add your own here, or mark a wrong detection as "not a parasite".</p>
 <form method="post" class="card"><input type="hidden" name="action" value="add"><div class="row">
 <div><label>Domain</label><input name="domain" placeholder="example.com or forbes.com/sites"></div>
 <div><label>Treat as</label><select name="kind"><option value="parasite">Parasite</option><option value="ignore">Not a parasite (ignore)</option></select></div></div>
@@ -353,6 +368,9 @@ Suggestions the tool found in your results are at the bottom of the Dashboard re
             d = d if "/" in d.replace("://", "") and "." in d else root_domain(host_of(d))
             conn.execute("INSERT OR REPLACE INTO overrides VALUES(?,?)", (d, f["kind"][0]))
         conn.commit()
+        job = live.get(f.get("job", [""])[0])
+        if job and f.get("action", [""])[0] == "add" and d and f.get("kind", [""])[0] in ("parasite", "ignore"):
+            live.apply_override(job, d, f["kind"][0])
         self._redirect("/domains?m=Updated. It applies to your next search.")
 
 

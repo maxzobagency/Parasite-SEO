@@ -60,6 +60,14 @@ class DetectorTests(unittest.TestCase):
         self.assertTrue(Detector(["social_video"]).classify("https://youtube.com/watch?v=1").is_parasite)
         self.assertTrue(Detector(["edu_gov"]).classify("https://cs.mit.edu/x").is_parasite)
 
+    def test_smart_detection_of_unlisted_hosts(self):
+        c = self.d.classify
+        self.assertTrue(c("https://forum.newsite.net/thread/9/best-vpn", "Best VPN forum").is_parasite)
+        self.assertTrue(c("https://newsite.io/@sarah/best-dog-food").is_parasite)
+        self.assertEqual(c("https://newsite.io/@sarah/x").category, "suspected")
+        self.assertFalse(c("https://cnet.com/tech/best-vpn/", "Best VPN").is_parasite)
+        self.assertFalse(Detector(["ugc_blog"]).classify("https://newsite.io/@sarah/x").is_parasite)  # switchable
+
     def test_root_domain(self):
         self.assertEqual(root_domain("a.b.example.co.uk"), "example.co.uk")
         self.assertEqual(root_domain("a.b.example.com"), "example.com")

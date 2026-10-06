@@ -19,7 +19,8 @@ class WebTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.fake = FakeAPI({"best vpn": ["https://medium.com/a", "https://real.com/1"],
-                            "best crm": ["https://real.com/2", "https://quora.com/q"]})
+                            "best crm": ["https://real.com/2", "https://quora.com/q",
+                                         "https://newsite.io/@sarah/best-crm", "https://brand.com/pricing"]})
         webapp.DataForSEO = lambda login, password: cls.fake
         cls.srv = ThreadingHTTPServer(("127.0.0.1", 0), webapp.Handler)
         cls.port = cls.srv.server_address[1]
@@ -62,6 +63,12 @@ class WebTests(unittest.TestCase):
         self.assertEqual((s["done"], s["total"], s["n_errors"]), (2, 2, 0), s)
         st, rep, _ = self.req("GET", f"/job/{job}/report")
         self.assertIn("quora.com", rep)
+        self.assertIn("newsite.io", rep)                       # unknown host flagged by smart detection
+        self.assertIn('"web": true', rep)
+        # confirm = counted for sure; dismissing removes the "?" immediately
+        self.req("POST", "/domains", {"action": "add", "domain": "newsite.io", "kind": "ignore", "job": job})
+        data = json.loads(self.req("GET", f"/job/{job}/report")[1].split("const D=")[1].split(";const $")[0])
+        self.assertNotIn("newsite.io", [p["platform"] for p in data["platforms"]])
         self.assertIn("best crm", self.req("GET", f"/job/{job}/export.csv")[1])
         self.assertEqual(self.req("GET", "/job/nope.json")[0], 404)
 

@@ -9,7 +9,7 @@ top_n = 10                # "visible" cut-off used in the report
 
 [detection]
 # add "social_video" (YouTube/Facebook/...) or "edu_gov" (hijacked .edu/.gov pages) if you want them counted
-enabled_categories = ["ugc_blog", "forum_qa", "docs_hosting", "code_static_hosting", "professional_social", "news_contributor"]
+enabled_categories = ["ugc_blog", "forum_qa", "docs_hosting", "code_static_hosting", "professional_social", "news_contributor", "suspected"]
 
 [paths]
 db = "parasite.db"
